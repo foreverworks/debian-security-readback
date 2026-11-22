@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Build debian-security-readback-<version>.pyz, the release asset: one file, standard library only,
+# run with any python3 >= 3.13. Reproducible: every file carries the commit's time and zipapp adds
+# them in order, so anyone can rebuild a tag and compare the sha256 with the release's.
+#
+#   scripts/build-pyz [<output dir>]      (default: dist/)
+set -euo pipefail
+export TZ=UTC  # zip stores local times
+umask 022
+root=$(cd "$(dirname "$0")/.." && pwd)
+out=${1:-"$root/dist"}
+name=debian-security-readback
+version=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import debian_security_readback as m; print(m.__version__)' "$root/src")
+stamp=$(git -C "$root" log -1 --format=%ct)
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+mkdir -p "$out" "$stage/app"
+cp -r "$root/src/debian_security_readback" "$stage/app/"
+find "$stage/app" -name __pycache__ -prune -exec rm -rf {} +
+chmod -R u=rwX,go=rX "$stage/app"
+printf 'import sys\n\nfrom debian_security_readback.cli import entry\n\nsys.exit(entry())\n' > "$stage/app/__main__.py"
+find "$stage/app" -exec touch -h -d "@$stamp" {} +
+python3 -I -m zipapp "$stage/app" -p '/usr/bin/env python3' -o "$out/$name-$version.pyz"
+(cd "$out" && sha256sum "$name-$version.pyz" > "$name-$version.pyz.sha256")
+echo "$out/$name-$version.pyz"

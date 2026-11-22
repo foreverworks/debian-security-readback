@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=84.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "debian-security-readback"
+dynamic = ["version"]
+description = "The state of every Debian security fix on a host: available, installed but not active yet, active, or blocked. Report only."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+dependencies = []
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Security",
+  "Topic :: System :: Systems Administration",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/foreverworks/debian-security-readback"
+
+[project.scripts]
+debian-security-readback = "debian_security_readback.cli:entry"
+
+[tool.setuptools.dynamic]
+version = { attr = "debian_security_readback.__version__" }
+
+[tool.setuptools.package-data]
+debian_security_readback = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+disallow_any_explicit = true
+files = ["src", "tests", "bin/debian-security-readback"]
+mypy_path = "src"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 130
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "N"]
+ignore = ["UP031"]  # printf-style formatting is the code's own style, kept from where it came from

@@ -1,0 +1,59 @@
+# Once a week: the full matrix (which also reads the tracker's live data, so a format change upstream
+# shows up here), and the next Python and Debian testing, both allowed to fail: they warn early, they
+# never block.
+name: weekly
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  supported:
+    if: ${{ !github.event.repository.private }}
+    uses: ./.github/workflows/supported.yml
+
+  next-python:
+    name: tests on the next Python (allowed to fail)
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.16"
+          allow-prereleases: true
+
+      - name: Tests
+        run: python -m unittest discover -s tests -t . -v
+
+  next-debian:
+    name: on Debian testing (allowed to fail)
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    continue-on-error: true
+    container: debian:testing@sha256:2d46f43b677a047cfab870549eea0d83d0a9bea2f55b3f481efc901043916c2a
+    steps:
+      - name: What the tests need
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3 git ca-certificates jq
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tests, on Debian testing's Python
+        run: python3 -I -m unittest discover -s tests -t . -v
+
+      - name: Known states on a real system (testing has no DSAs of its own, so only the fixture)
+        run: tests/integration/debian.sh python3 -I bin/debian-security-readback

@@ -1,0 +1,43 @@
+## debian-security-readback configuration, /etc/debian-security-readback.toml by default.
+## Every key is optional, and every line below shows its default. Flags on the command line
+## (--host, --release, --cache-dir, --out-dir, --fail-on) win over this file.
+
+## The name the report carries. Empty: the kernel's node name.
+# host = ""
+
+## The Debian release to read fixes for, by codename. Empty: VERSION_CODENAME from /etc/os-release.
+# release = ""
+
+## Where the tracker's files are kept between runs (about 90 MB), and where report.json and
+## report.md are written.
+# cache_dir = "/var/cache/debian-security-readback"
+# out_dir = "/var/lib/debian-security-readback"
+
+## The tracker's DSA list and its JSON. A mirror works, and so does a file:// URL for a host with no
+## way out: copy both files there some other way.
+# dsa_list_url = "https://salsa.debian.org/security-tracker-team/security-tracker/-/raw/master/data/DSA/list"
+# tracker_url = "https://security-tracker.debian.org/tracker/data/json"
+
+## A cached copy younger than this is used as it is. An older one is downloaded again, and kept (with
+## a warning in the report) when the download fails.
+# cache_max_age_hours = 20
+
+## A download that takes longer than this counts as failed.
+# download_deadline_seconds = 300
+
+## The report counts the active fixes published in the last this many days.
+# recent_days = 30
+
+## Substrings of /proc/<pid>/cgroup that mark a process of a container. Its files are the container's,
+## not the host's, so its deleted libraries are not the host's pending restarts. Add the marker of any
+## other container runtime you run.
+# container_cgroup_markers = ["/docker/", "docker-", "/libpod-", "libpod-", "machine.slice", "/lxc.payload", "/incus", "/kubepods", "crio-"]
+
+## Check running Docker containers and Incus instances against their images. Skipped quietly when the
+## command is not installed or does not answer.
+# docker = true
+# incus = true
+
+## Exit 3 (instead of 0) when any fix is in one of these states, for a CI job or a monitor that should
+## go red. States: blocked, installed_pending_activation, available, active.
+# fail_on = []

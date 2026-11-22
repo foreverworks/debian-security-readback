@@ -1,0 +1,15 @@
+# Runs one readback. Install with debian-security-readback.timer; see the README.
+[Unit]
+Description=Debian security readback (report only)
+Documentation=https://github.com/foreverworks/debian-security-readback
+Wants=network-online.target
+After=network-online.target apt-daily.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/debian-security-readback/debian-security-readback.pyz
+# Exit 3 means "report written, and a fix is in a fail_on state": a finding, not a broken unit.
+SuccessExitStatus=3
+TimeoutStartSec=15min
+Nice=10
+IOSchedulingClass=idle

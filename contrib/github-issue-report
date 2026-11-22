@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Keep ONE open GitHub issue per host with its latest readback: opened when a fix is waiting,
+# updated in place on every run, closed once every fix is active. A failed readback keeps the issue
+# open and says so; it never reads as clean.
+#
+#   github-issue-report [options] <host> <report.md> <report.json> <run_url>
+#
+#   --repo OWNER/REPO    the repository (default: gh's own, from GH_REPO or the current checkout)
+#   --label NAME         the label that marks these issues (default: security-readback)
+#   --title-prefix TEXT  the issue title is TEXT<host> (default: "Security readback: ")
+#   --notify COMMAND     run when the picture changed (a fix appeared, moved state or went active) or
+#                        the readback started failing, as: COMMAND <title> <priority> <tag> <message>
+#                        with priority `high` and tag `warning` for a failure, `default` and `shield`
+#                        otherwise. COMMAND is read by sh, so it may carry its own arguments.
+#
+# The report's signature rides in the issue body as an HTML comment, so a notification goes out when
+# something changed, not on every run. Needs `gh` (logged in, or GH_TOKEN) and `jq`.
+set -euo pipefail
+
+repo="" label="security-readback" prefix="Security readback: " notify=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) repo="${2:?--repo needs a value}"; shift 2 ;;
+    --label) label="${2:?--label needs a value}"; shift 2 ;;
+    --title-prefix) prefix="${2?--title-prefix needs a value}"; shift 2 ;;
+    --notify) notify="${2:?--notify needs a value}"; shift 2 ;;
+    --) shift; break ;;
+    -*) echo "github-issue-report: unknown option $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+[ $# -eq 4 ] || { echo "usage: github-issue-report [options] <host> <report.md> <report.json> <run_url>" >&2; exit 2; }
+host="$1" md="$2" json="$3" run_url="$4"
+title="${prefix}${host}"
+gh_repo=()
+[ -z "$repo" ] || gh_repo=(--repo "$repo")
+me="debian-security-readback's github-issue-report"
+
+say() {  # title priority tag message
+  [ -n "$notify" ] || return 0
+  sh -c "$notify"' "$@"' notify "$@" || echo "github-issue-report: the notify command failed" >&2
+}
+
+gh label create "$label" "${gh_repo[@]}" --color 0E8A16 \
+  --description "Debian security fixes, installed versus active, per host" >/dev/null 2>&1 || true
+
+sig=$(jq -r '.signature' "$json")
+failed=$(jq -r 'has("error")' "$json")
+open_n=$(jq -r 'if has("error") then 0 else .counts | .blocked + .installed_pending_activation + .available end' "$json")
+summary=$(jq -r 'if has("error") then "failed" else .counts | "blocked \(.blocked), pending activation \(.installed_pending_activation), available \(.available), active \(.active)" end' "$json")
+
+num=$(gh issue list "${gh_repo[@]}" --state open --label "$label" --search "\"$title\" in:title" --json number,title \
+  | jq -r --arg t "$title" '[.[] | select(.title == $t) | .number][0] // empty')
+old_sig=""
+if [ -n "$num" ]; then
+  old_sig=$(gh issue view "$num" "${gh_repo[@]}" --json body --jq .body | sed -n 's/.*<!-- sig:\([0-9a-z]*\) -->.*/\1/p' | sed -n 1p)
+fi
+
+# GitHub caps an issue body at 65536 characters.
+report=$(head -c 60000 "$md")
+
+if [ "$failed" = true ]; then
+  body="${report}
+
+Run: ${run_url}
+
+_The readback failed, so nothing here says the host is patched. Auto-managed by ${me}._
+<!-- sig:failed -->"
+  if [ -n "$num" ]; then
+    gh issue edit "$num" "${gh_repo[@]}" --body "$body" >/dev/null
+  else
+    gh issue create "${gh_repo[@]}" --title "$title" --label "$label" --body "$body" >/dev/null
+  fi
+  echo "readback failed on $host: issue updated"
+  if [ "$old_sig" != failed ]; then
+    say "security readback FAILED: ${host}" high warning "${host}: the readback failed, no state known. ${run_url}"
+  fi
+elif [ "$open_n" -gt 0 ]; then
+  body="${report}
+
+Run: ${run_url}
+
+_Auto-managed by ${me}: updated in place on every run, closed when no fix is left to install or activate._
+<!-- sig:${sig} -->"
+  if [ -n "$num" ]; then
+    gh issue edit "$num" "${gh_repo[@]}" --body "$body" >/dev/null
+    echo "updated readback issue #$num for $host"
+  else
+    gh issue create "${gh_repo[@]}" --title "$title" --label "$label" --body "$body" >/dev/null
+    echo "opened readback issue for $host"
+  fi
+  if [ "$sig" != "$old_sig" ]; then
+    say "security readback: ${host}" default shield "${host}: ${summary}. ${run_url}"
+  fi
+else
+  if [ -n "$num" ]; then
+    gh issue comment "$num" "${gh_repo[@]}" --body "Every security fix on \`${host}\` is installed and active (${summary}), resolved by ${run_url}. Closing." >/dev/null
+    gh issue close "$num" "${gh_repo[@]}" >/dev/null
+    echo "closed readback issue #$num for $host"
+  else
+    echo "security readback clean on $host"
+  fi
+fi

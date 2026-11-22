@@ -1,0 +1,10 @@
+[Unit]
+Description=Debian security readback, once a day
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

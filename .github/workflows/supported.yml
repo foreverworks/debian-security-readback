@@ -1,0 +1,62 @@
+# The full matrix: the unit tests on every supported Python, 3.13 (Debian 13's) up to the newest
+# stable, and the release asset on a real Debian 13 system, against a fixture and against the
+# tracker's live data. Called by weekly.yml and by release.yml, where it gates the publish.
+name: supported
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests on Python ${{ matrix.python }}
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Tests
+        run: python -m unittest discover -s tests -t . -v
+
+  debian:
+    name: on Debian 13 (trixie), as root
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    container: debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
+    steps:
+      - name: What the tests need (the readback itself needs only python3)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3 git ca-certificates jq
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tests, on Debian's own Python
+        run: python3 -I -m unittest discover -s tests -t . -v
+
+      - name: Build the release asset
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          scripts/build-pyz
+
+      - name: Known states on a real system (holds, a local archive, a process on an upgraded binary)
+        run: tests/integration/debian.sh python3 -I dist/debian-security-readback-*.pyz
+
+      - name: The tracker's live data
+        run: tests/integration/live.sh python3 -I dist/debian-security-readback-*.pyz
