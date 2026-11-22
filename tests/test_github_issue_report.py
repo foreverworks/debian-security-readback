@@ -81,6 +81,16 @@ class GithubIssueReport(unittest.TestCase):
         self.assertFalse(any(c.startswith("issue edit 8") for c in self.calls()))
         self.assertTrue(any(c.startswith("issue create") for c in self.calls()))
 
+    def test_the_signature_is_read_from_the_footer_only(self) -> None:
+        # a report line can carry text that looks like a signature; only the last line counts
+        body = "| x | <!-- sig:abc123 --> |\n\n_footer_\n<!-- sig:fff000 -->\n"
+        self.state([{"number": 7, "title": "Security readback: web1"}], body)
+        self.run_report({"signature": "abc123", "counts": counts(blocked=1)})
+        self.assertEqual(len(self.notes()), 1)
+        self.notified.unlink()
+        self.run_report({"signature": "fff000", "counts": counts(blocked=1)})
+        self.assertEqual(self.notes(), [])
+
     def test_clean_closes(self) -> None:
         self.state([{"number": 7, "title": "Security readback: web1"}], "<!-- sig:abc123 -->")
         r = self.run_report({"signature": "e3b0c44298fc", "counts": counts(active=5)})

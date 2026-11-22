@@ -79,14 +79,35 @@ def failed(host: str, today: datetime.date, error: str) -> FailedReport:
     }
 
 
+_ENTITIES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "@": "&#64;"}
+
+
+def cell(value: object) -> str:
+    """Text safe in a Markdown table cell, here and in a GitHub issue: a process can name itself
+    anything, so nothing it says may close the cell, start a code span, open HTML or mention someone."""
+    out = []
+    for ch in str(value):
+        if ch in "\\|`[]":
+            out.append("\\" + ch)
+        elif ch in _ENTITIES:
+            out.append(_ENTITIES[ch])
+        elif ch in "\r\n\t" or not ch.isprintable():
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def render_failed(host: str, error: str) -> str:
-    return "Security readback failed on %s:\n\n%s\n" % (host, error)
+    """The error goes in an indented code block, where Markdown renders nothing of it."""
+    body = "\n".join("    " + line for line in error.splitlines() or [""])
+    return "Security readback failed on %s:\n\n%s\n" % (cell(host), body)
 
 
 def _containers(name: str, items: list[StaleDocker] | list[StaleIncus] | None, lines: list[str]) -> list[str]:
     head = ["", "### %s containers behind their image" % name]
     if items is None:
-        return [*head, "Not present or not readable on this host."]
+        return [*head, "Not present, turned off, or not readable on this host."]
     if not items:
         return [*head, "None: every running one is on the image its tag points to."]
     return head + lines
@@ -105,16 +126,16 @@ def render(
     """The report as Markdown: counts, every fix not yet active, the recent active ones as a count."""
     c = counts(rows)
     lines = [
-        "Security readback: %s, %s" % (host, today.isoformat()),
+        "Security readback: %s, %s" % (cell(host), today.isoformat()),
         "",
-        "Kernel: running `%s` (package %s), installed newest %s"
-        % (kernel["release"], kernel["running"] or "unknown", kernel["installed"] or "none"),
+        "Kernel: running %s (package %s), installed newest %s"
+        % (cell(kernel["release"]), cell(kernel["running"] or "unknown"), cell(kernel["installed"] or "none")),
         "",
         "| state | fixes |",
         "|---|---|",
     ]
     lines += ["| %s | %d |" % (s, c[s]) for s in STATES]
-    lines += ["", *("**Warning:** " + n for n in notes)]
+    lines += ["", *("**Warning:** " + cell(n) for n in notes)]
     lines += [
         "",
         "A fix counts as `active` only when installed and no running process holds the old code; "
@@ -130,8 +151,10 @@ def render(
             "|---|---|---|---|---|---|---|",
         ]
         lines += [
-            "| %s | %s | %s | %s | %s | %s | %s |"
-            % (r["state"], r["dsa"], r["date"], r["source"], r["fixed_version"], r["urgency"], r["reason"])
+            "| %s |"
+            % " | ".join(
+                cell(v) for v in (r["state"], r["dsa"], r["date"], r["source"], r["fixed_version"], r["urgency"], r["reason"])
+            )
             for r in open_rows
         ]
         lines.append("")
@@ -143,7 +166,8 @@ def render(
         "Docker",
         docker,
         [
-            "- %s runs %s %.19s, the tag is now %.19s" % (d["name"], d["image"], d["image_id"], d["current_id"])
+            "- %s runs %s %s, the tag is now %s"
+            % (cell(d["name"]), cell(d["image"]), cell(d["image_id"][:19]), cell(d["current_id"][:19]))
             for d in docker or []
         ],
     )
@@ -151,7 +175,8 @@ def render(
         "Incus",
         incus,
         [
-            "- %s/%s runs image %.12s, newer local image %.12s" % (i["project"], i["name"], i["fingerprint"], i["newer"])
+            "- %s/%s runs image %s, newer local image %s"
+            % (cell(i["project"]), cell(i["name"]), cell(i["fingerprint"][:12]), cell(i["newer"][:12]))
             for i in incus or []
         ],
     )

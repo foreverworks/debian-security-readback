@@ -9,7 +9,8 @@
 # release = ""
 
 ## Where the tracker's files are kept between runs (about 90 MB), and where report.json and
-## report.md are written.
+## report.md are written. Absolute paths. Each must belong to the running user and not be writable by
+## group or others; a missing one is created with mode 0755.
 # cache_dir = "/var/cache/debian-security-readback"
 # out_dir = "/var/lib/debian-security-readback"
 
@@ -22,16 +23,42 @@
 ## a warning in the report) when the download fails.
 # cache_max_age_hours = 20
 
-## A download that takes longer than this counts as failed.
+## A download that takes longer than this counts as failed (1 or more). Every read waits at most the
+## time that is left, so a slow server cannot stretch it.
 # download_deadline_seconds = 300
+
+## The largest download accepted, in MiB. The DSA list is about 1.3 MB and the tracker's JSON about
+## 90 MB (November 2026); anything far larger is not what it claims to be.
+# dsa_list_max_mib = 64
+# tracker_max_mib = 512
+
+## How long dpkg-query, apt-cache, apt-mark, docker or incus may take, each call (1 or more). A dpkg or
+## apt call that runs out fails the readback; a docker or incus one skips that check.
+# command_timeout_seconds = 120
+
+## The mode of report.json and report.md (an octal number). The reports name packages that wait for a
+## fix, so they are not world-readable by default.
+# report_mode = 0o640
 
 ## The report counts the active fixes published in the last this many days.
 # recent_days = 30
 
-## Substrings of /proc/<pid>/cgroup that mark a process of a container. Its files are the container's,
-## not the host's, so its deleted libraries are not the host's pending restarts. Add the marker of any
-## other container runtime you run.
-# container_cgroup_markers = ["/docker/", "docker-", "/libpod-", "libpod-", "machine.slice", "/lxc.payload", "/incus", "/kubepods", "crio-"]
+## Regular expressions searched in each cgroup path of /proc/<pid>/cgroup that mark a process of a
+## container. Its files are the container's, not the host's, so its deleted libraries are not the
+## host's pending restarts. Each pattern matches whole path components, so docker.service or
+## incus.service (host daemons) never match. Add a pattern for any other runtime you run; setting the
+## key replaces the whole list.
+# container_cgroup_patterns = [
+#   '(^|/)docker-[0-9a-f]{64}\.scope(/|$)',
+#   '(^|/)docker/[0-9a-f]{64}(/|$)',
+#   '(^|/)libpod-[0-9a-f]{64}\.scope(/|$)',
+#   '(^|/)libpod_parent/libpod-[0-9a-f]{64}(/|$)',
+#   '(^|/)crio-[0-9a-f]{64}\.scope(/|$)',
+#   '(^|/)cri-containerd-[0-9a-f]{64}\.scope(/|$)',
+#   '(^|/)kubepods[^/]*(/|$)',
+#   '(^|/)lxc\.payload\.[^/]+(/|$)',
+#   '(^|/)machine\.slice/[^/]+/payload(/|$)',
+# ]
 
 ## Check running Docker containers and Incus instances against their images. Skipped quietly when the
 ## command is not installed or does not answer.

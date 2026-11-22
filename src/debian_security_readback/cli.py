@@ -1,8 +1,9 @@
 """debian-security-readback: the state of every Debian security fix on this host. Report only.
 
 Exit codes: 0 the report is written; 1 the readback failed (a failure report is written in its
-place); 2 the command line or the configuration is wrong; 3 the report is written and a fix is in
-one of the states named by fail_on.
+place, unless another run holds the lock or the output directory is unsafe); 2 the command line or
+the configuration is wrong; 3 the report is written and a fix is in one of the states named by
+fail_on.
 """
 
 import argparse
@@ -20,16 +21,18 @@ from debian_security_readback.collect import (
     collect_incus,
     collect_installed,
     collect_pending,
-    fetch,
 )
 from debian_security_readback.config import Config, ConfigError, from_mapping, load
 from debian_security_readback.decide import classify, counts, relevant_packages
+from debian_security_readback.download import fetch
 from debian_security_readback.facts import kernel_state, parse_os_release
+from debian_security_readback.files import LockBusyError, UnsafeDirError, exclusive_lock, safe_dir, write_text
 from debian_security_readback.model import STATES, ReadbackError
 from debian_security_readback.report import build, failed, render, render_failed
 from debian_security_readback.sources import load_urgencies, validate_dsa_text
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_FINDINGS = 0, 1, 2, 3
+MIB = 1 << 20
 
 
 def detect_release(os_release_text: str) -> str:
@@ -42,14 +45,11 @@ def detect_release(os_release_text: str) -> str:
         )
     codename = info.get("VERSION_CODENAME", "")
     if not codename:
-        raise ReadbackError("/etc/os-release names no VERSION_CODENAME; set `release`")
+        raise ReadbackError(
+            "/etc/os-release names no VERSION_CODENAME, as on Debian unstable, which gets no DSAs; "
+            "set `release` only if this system really runs a stable release"
+        )
     return codename
-
-
-def _write(path: str, text: str) -> None:
-    with open(path + ".tmp", "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(path + ".tmp", path)
 
 
 def readback(cfg: Config, host: str, today: datetime.date, proc_root: str = "/proc") -> int:
@@ -58,8 +58,15 @@ def readback(cfg: Config, host: str, today: datetime.date, proc_root: str = "/pr
     if not release:
         with open("/etc/os-release", encoding="utf-8") as f:
             release = detect_release(f.read())
-    os.makedirs(cfg.cache_dir, exist_ok=True)
+    safe_dir(cfg.cache_dir)
+    safe_dir(cfg.out_dir)
+    with exclusive_lock(os.path.join(cfg.cache_dir, "lock")):
+        return _readback(cfg, host, release, today, proc_root)
+
+
+def _readback(cfg: Config, host: str, release: str, today: datetime.date, proc_root: str) -> int:
     max_age_s = cfg.cache_max_age_hours * 3600
+    timeout = float(cfg.command_timeout_seconds)
 
     def check_dsa(path: str) -> None:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -73,34 +80,43 @@ def readback(cfg: Config, host: str, today: datetime.date, proc_root: str = "/pr
     if os.geteuid() != 0:
         notes.append("not run as root: processes of other users were not read, so pending restarts may be missing")
     dsa_path, note = fetch(
-        cfg.dsa_list_url, os.path.join(cfg.cache_dir, "dsa-list"), check_dsa, max_age_s, cfg.download_deadline_seconds
+        cfg.dsa_list_url,
+        os.path.join(cfg.cache_dir, "dsa-list"),
+        check_dsa,
+        max_age_s,
+        cfg.download_deadline_seconds,
+        cfg.dsa_list_max_mib * MIB,
     )
     notes += [note] if note else []
     with open(dsa_path, encoding="utf-8", errors="replace") as f:
         fixes = validate_dsa_text(f.read(), release)
     tracker_path, note = fetch(
-        cfg.tracker_url, os.path.join(cfg.cache_dir, "tracker.json"), check_tracker, max_age_s, cfg.download_deadline_seconds
+        cfg.tracker_url,
+        os.path.join(cfg.cache_dir, "tracker.json"),
+        check_tracker,
+        max_age_s,
+        cfg.download_deadline_seconds,
+        cfg.tracker_max_mib * MIB,
     )
     notes += [note] if note else []
     with open(tracker_path, encoding="utf-8") as f:
         urgencies = load_urgencies(f, {x["source"] for x in fixes}, release)
 
-    installed = collect_installed()
+    installed = collect_installed(timeout)
     kernel = kernel_state(installed, os.uname().release)
-    holds = collect_holds()
+    holds = collect_holds(timeout)
     names = relevant_packages(fixes, installed) + [p["name"] for p in installed if p["name"].startswith("linux-image-")]
-    candidates = collect_candidates(sorted(set(names)))
-    pending = collect_pending(proc_root, cfg.container_cgroup_markers)
+    candidates = collect_candidates(sorted(set(names)), timeout)
+    pending = collect_pending(proc_root, cfg.container_cgroup_patterns, timeout)
     rows = classify(fixes, installed, candidates, holds, pending, kernel, urgencies, today)
-    docker = collect_docker() if cfg.docker else None
-    incus = collect_incus() if cfg.incus else None
+    docker = collect_docker(timeout) if cfg.docker else None
+    incus = collect_incus(timeout) if cfg.incus else None
 
     peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
     report = build(host, release, rows, kernel, docker, incus, today, notes, peak_mb)
     md = render(host, rows, kernel, docker, incus, today, notes, cfg.recent_days)
-    os.makedirs(cfg.out_dir, exist_ok=True)
-    _write(os.path.join(cfg.out_dir, "report.json"), json.dumps(report, indent=1) + "\n")
-    _write(os.path.join(cfg.out_dir, "report.md"), md)
+    write_text(os.path.join(cfg.out_dir, "report.json"), cfg.report_mode, json.dumps(report, indent=1) + "\n")
+    write_text(os.path.join(cfg.out_dir, "report.md"), cfg.report_mode, md)
     print(md)
     print("SECURITY_READBACK counts=%s signature=%s" % (json.dumps(counts(rows)), report["signature"]))
     hit = [s for s in cfg.fail_on if report["counts"][s]]
@@ -130,6 +146,17 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _write_failure(cfg: Config, host: str, today: datetime.date, error: str) -> None:
+    try:
+        safe_dir(cfg.out_dir)
+        write_text(
+            os.path.join(cfg.out_dir, "report.json"), cfg.report_mode, json.dumps(failed(host, today, error), indent=1) + "\n"
+        )
+        write_text(os.path.join(cfg.out_dir, "report.md"), cfg.report_mode, render_failed(host, error))
+    except (OSError, UnsafeDirError) as w:
+        print("and the failure report could not be written: %s" % w, file=sys.stderr)
+
+
 def main(argv: list[str]) -> int:
     args = parser().parse_args(argv)
     flags: dict[str, object] = {
@@ -148,15 +175,14 @@ def main(argv: list[str]) -> int:
     today = datetime.datetime.now(datetime.UTC).date()
     try:
         return readback(cfg, host, today)
+    except LockBusyError as e:
+        print("security readback not run: %s" % e, file=sys.stderr)
+        return EXIT_FAILED
     except Exception as e:  # any failure is a failed readback, never a clean one
         error = "%s: %s" % (type(e).__name__, e)
         print("security readback failed: %s" % error, file=sys.stderr)
-        try:
-            os.makedirs(cfg.out_dir, exist_ok=True)
-            _write(os.path.join(cfg.out_dir, "report.json"), json.dumps(failed(host, today, error), indent=1) + "\n")
-            _write(os.path.join(cfg.out_dir, "report.md"), render_failed(host, error))
-        except OSError as w:
-            print("and the failure report could not be written: %s" % w, file=sys.stderr)
+        if not isinstance(e, UnsafeDirError):
+            _write_failure(cfg, host, today, error)
         return EXIT_FAILED
 
 

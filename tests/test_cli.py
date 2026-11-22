@@ -3,12 +3,15 @@ tracker's files are local fixtures served as file:// URLs."""
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
+from debian_security_readback.files import exclusive_lock
 from tests.support import DSA, ROOT, env_with_path, executable, filler_dsa, tracker_text
 
 INSTALLED = [
@@ -67,9 +70,10 @@ class Cli(unittest.TestCase):
         p.write_text("".join("%s = %s\n" % kv for kv in values.items()), encoding="utf-8")
         return p
 
-    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_cli(self, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
         cmd = [sys.executable, "-I", str(ROOT / "bin" / "debian-security-readback"), *args]
-        return subprocess.run(cmd, capture_output=True, text=True, env=env_with_path(self.bin), check=False, timeout=120)
+        full_env = {**env_with_path(self.bin), **env}
+        return subprocess.run(cmd, capture_output=True, text=True, env=full_env, check=False, timeout=120)
 
     def report(self) -> dict[str, object]:
         data: dict[str, object] = json.loads((self.out / "report.json").read_text(encoding="utf-8"))
@@ -165,6 +169,74 @@ class Cli(unittest.TestCase):
         r = self.run_cli("--config", str(self.config()))
         self.assertEqual(r.returncode, 1)
         self.assertEqual(self.report()["signature"], "failed")
+
+    def test_apt_failing_fails_the_readback(self) -> None:
+        for tool in ("apt-cache", "apt-mark"):
+            with self.subTest(tool=tool):
+                saved = (self.bin / tool).read_text(encoding="utf-8")
+                (self.bin / tool).write_text("#!/bin/sh\necho 'E: broken' >&2\nexit 100\n", encoding="utf-8")
+                r = self.run_cli("--config", str(self.config()))
+                (self.bin / tool).write_text(saved, encoding="utf-8")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("%s exited 100" % tool, r.stderr)
+                self.assertEqual(self.report()["signature"], "failed")
+
+    def test_commands_run_in_the_c_locale(self) -> None:
+        executable(
+            self.bin / "apt-cache",
+            '#!/bin/sh\nshift\nfor p in "$@"; do\n  echo "$p:"\n'
+            '  if [ "$LC_ALL" = C ]; then label="Candidate:"; else label="Candidat :"; fi\n'
+            '  case "$p" in gpgme1.0) echo "  $label 1.24.2-3+deb13u1" ;; *) echo "  $label (none)" ;; esac\ndone\n',
+        )
+        r = self.run_cli("--config", str(self.config()), LC_ALL="fr_FR.UTF-8", LANG="fr_FR.UTF-8")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        fixes = self.report()["fixes"]
+        assert isinstance(fixes, list)
+        self.assertIn(("gpgme1.0", "available"), {(f["source"], f["state"]) for f in fixes})
+
+    def test_a_command_that_hangs_times_out(self) -> None:
+        executable(self.bin / "apt-mark", "#!/bin/sh\nexec sleep 30\n")
+        start = time.monotonic()
+        r = self.run_cli("--config", str(self.config(command_timeout_seconds="1")))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("apt-mark did not answer in 1 s", r.stderr)
+        self.assertLess(time.monotonic() - start, 15)
+
+    @unittest.skipIf(os.geteuid() == 0, "runs as root")
+    def test_not_root_is_noted(self) -> None:
+        self.assertEqual(self.run_cli("--config", str(self.config())).returncode, 0)
+        notes = self.report()["notes"]
+        assert isinstance(notes, list)
+        self.assertTrue(any("not run as root" in n for n in notes), notes)
+
+    def test_a_second_run_leaves_the_first_alone(self) -> None:
+        (self.dir / "cache").mkdir()
+        self.out.mkdir()
+        (self.out / "report.json").write_text('{"signature": "first"}', encoding="utf-8")
+        with exclusive_lock(str(self.dir / "cache" / "lock")):
+            r = self.run_cli("--config", str(self.config()))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("another readback is running", r.stderr)
+        self.assertEqual(self.report()["signature"], "first")
+
+    def test_an_unsafe_directory_is_refused(self) -> None:
+        self.out.mkdir()
+        self.out.chmod(0o777)
+        r = self.run_cli("--config", str(self.config()))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("writable by group or others", r.stderr)
+        self.assertFalse((self.out / "report.json").exists())
+
+    def test_report_modes(self) -> None:
+        self.assertEqual(self.run_cli("--config", str(self.config())).returncode, 0)
+        self.assertEqual(stat.S_IMODE((self.out / "report.json").stat().st_mode), 0o640)
+        self.assertEqual(self.run_cli("--config", str(self.config(report_mode="0o600"))).returncode, 0)
+        self.assertEqual(stat.S_IMODE((self.out / "report.md").stat().st_mode), 0o600)
+
+    def test_a_release_without_dsas_says_so(self) -> None:
+        r = self.run_cli("--config", str(self.config()), "--release", "forky")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no fixes for forky", r.stderr)
 
 
 @unittest.skipUnless(os.path.exists("/proc/self/maps"), "needs Linux /proc")

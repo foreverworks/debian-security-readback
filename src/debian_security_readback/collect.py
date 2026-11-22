@@ -3,12 +3,7 @@
 import json
 import os
 import subprocess
-import time
-import urllib.parse
-import urllib.request
-from collections.abc import Callable
 
-from debian_security_readback import __version__
 from debian_security_readback.decide import stale_docker, stale_incus
 from debian_security_readback.facts import (
     DPKG_FORMAT,
@@ -22,63 +17,40 @@ from debian_security_readback.facts import (
     parse_owners,
     pending_packages,
 )
-from debian_security_readback.model import Package, Process, ReadbackError, StaleDocker, StaleIncus
+from debian_security_readback.model import Package, Process, StaleDocker, StaleIncus
 
-SOCKET_TIMEOUT_S = 60
+COMMAND_TIMEOUT_S = 120.0
 
 
 class ToolError(Exception):
-    """A command that had to succeed did not."""
+    """A command that had to succeed did not, or did not answer in time."""
 
 
-def run(cmd: list[str], check: bool = False) -> str:
-    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+def run(cmd: list[str], check: bool = False, timeout: float = COMMAND_TIMEOUT_S) -> str:
+    """The command's standard output. It runs in the C locale, because the output is parsed: a
+    translated `apt-cache policy` says "Candidat :" and every fix would read as blocked."""
+    env = {**os.environ, "LC_ALL": "C"}
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as e:
+        raise ToolError("%s did not answer in %g s" % (cmd[0], timeout)) from e
     if check and r.returncode:
-        raise ToolError("%s: %s" % (" ".join(cmd), r.stderr.strip()))
+        raise ToolError("%s exited %d: %s" % (cmd[0], r.returncode, r.stderr.strip()[-500:]))
     return r.stdout
 
 
-def fetch(url: str, dest: str, check: Callable[[str], None], max_age_s: float, deadline_s: float) -> tuple[str, str]:
-    """`url` downloaded to `dest`, unless `dest` is younger than max_age_s. A download that fails,
-    takes longer than deadline_s or does not pass `check` (a callable on the path that raises
-    ReadbackError) never replaces the cached copy; a stale cached copy is used instead. Returns
-    (path, note), where the note says so, or is empty."""
-    if os.path.exists(dest) and time.time() - os.path.getmtime(dest) < max_age_s:
-        return dest, ""
-    tmp = dest + ".tmp"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "debian-security-readback/" + __version__})
-        start = time.time()
-        with urllib.request.urlopen(req, timeout=SOCKET_TIMEOUT_S) as r, open(tmp, "wb") as f:
-            while chunk := r.read(1 << 20):
-                f.write(chunk)
-                if time.time() - start > deadline_s:
-                    raise ReadbackError("download took longer than %d s" % deadline_s)
-        check(tmp)
-        os.replace(tmp, dest)
-        return dest, ""
-    except (OSError, ReadbackError, ValueError) as e:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        if not os.path.exists(dest):
-            raise ReadbackError("%s: %s, and no cached copy" % (url, e)) from e
-        age = int((time.time() - os.path.getmtime(dest)) / 3600)
-        where = urllib.parse.urlparse(url).netloc or url
-        return dest, "%s could not be refreshed (%s): using a copy %d h old" % (where, e, age)
+def collect_installed(timeout: float = COMMAND_TIMEOUT_S) -> list[Package]:
+    return parse_installed(run(["dpkg-query", "-W", "-f", DPKG_FORMAT], check=True, timeout=timeout))
 
 
-def collect_installed() -> list[Package]:
-    return parse_installed(run(["dpkg-query", "-W", "-f", DPKG_FORMAT], check=True))
+def collect_holds(timeout: float = COMMAND_TIMEOUT_S) -> set[str]:
+    return set(run(["apt-mark", "showhold"], check=True, timeout=timeout).split())
 
 
-def collect_holds() -> set[str]:
-    return set(run(["apt-mark", "showhold"], check=True).split())
-
-
-def collect_candidates(names: list[str]) -> dict[str, str]:
+def collect_candidates(names: list[str], timeout: float = COMMAND_TIMEOUT_S) -> dict[str, str]:
     cands: dict[str, str] = {}
     for i in range(0, len(names), 200):
-        cands.update(parse_apt_policy(run(["apt-cache", "policy", *names[i : i + 200]])))
+        cands.update(parse_apt_policy(run(["apt-cache", "policy", *names[i : i + 200]], check=True, timeout=timeout)))
     return cands
 
 
@@ -87,14 +59,14 @@ def _read(path: str) -> str:
         return f.read()
 
 
-def collect_processes(proc_root: str, markers: tuple[str, ...]) -> list[Process]:
+def collect_processes(proc_root: str, patterns: tuple[str, ...]) -> list[Process]:
     """The host's processes (containers left out by cgroup) that map a deleted file or run a deleted
     binary."""
     procs: list[Process] = []
     for pid in sorted((d for d in os.listdir(proc_root) if d.isdigit()), key=int):
         d = os.path.join(proc_root, pid)
         try:
-            if in_container(_read(d + "/cgroup"), markers):
+            if in_container(_read(d + "/cgroup"), patterns):
                 continue
             paths = parse_maps_deleted(_read(d + "/maps"))
         except OSError:
@@ -114,37 +86,47 @@ def collect_processes(proc_root: str, markers: tuple[str, ...]) -> list[Process]
     return procs
 
 
-def collect_pending(proc_root: str, markers: tuple[str, ...]) -> dict[str, list[str]]:
-    procs = collect_processes(proc_root, markers)
+def collect_pending(proc_root: str, patterns: tuple[str, ...], timeout: float = COMMAND_TIMEOUT_S) -> dict[str, list[str]]:
+    """{package: processes}. dpkg-query -S exits 1 when one of the paths belongs to no package, so its
+    exit status cannot tell a failure from that: a path it does not answer for is left out."""
+    procs = collect_processes(proc_root, patterns)
     allpaths = sorted({x for p in procs for x in p["paths"]})
     owners: dict[str, str] = {}
     for i in range(0, len(allpaths), 100):
-        owners.update(parse_owners(run(["dpkg-query", "-S", *allpaths[i : i + 100]])))
+        owners.update(parse_owners(run(["dpkg-query", "-S", *allpaths[i : i + 100]], timeout=timeout)))
     return pending_packages(procs, owners)
 
 
-def collect_docker() -> list[StaleDocker] | None:
+def collect_docker(timeout: float = COMMAND_TIMEOUT_S) -> list[StaleDocker] | None:
     """None when Docker is not there or does not answer."""
     try:
-        ids = run(["docker", "ps", "-q"], check=True).split()
+        ids = run(["docker", "ps", "-q"], check=True, timeout=timeout).split()
     except (OSError, ToolError):
         return None
     if not ids:
         return []
-    running = parse_docker_inspect(run(["docker", "inspect", "--format", "{{.Name}}\t{{.Config.Image}}\t{{.Image}}", *ids]))
-    current: dict[str, str] = {}
-    for image in sorted({c["image"] for c in running}):
-        out = run(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip()
-        if out:
-            current[image] = out
+    try:
+        fmt = "{{.Name}}\t{{.Config.Image}}\t{{.Image}}"
+        running = parse_docker_inspect(run(["docker", "inspect", "--format", fmt, *ids], timeout=timeout))
+        current: dict[str, str] = {}
+        for image in sorted({c["image"] for c in running}):
+            out = run(["docker", "image", "inspect", "--format", "{{.Id}}", image], timeout=timeout).strip()
+            if out:
+                current[image] = out
+    except ToolError:
+        return None
     return stale_docker(running, current)
 
 
-def collect_incus() -> list[StaleIncus] | None:
+def collect_incus(timeout: float = COMMAND_TIMEOUT_S) -> list[StaleIncus] | None:
     """None when Incus is not there or does not answer."""
     try:
-        insts: object = json.loads(run(["incus", "list", "--all-projects", "--format", "json"], check=True) or "[]")
-        images: object = json.loads(run(["incus", "image", "list", "--all-projects", "--format", "json"], check=True) or "[]")
+        insts: object = json.loads(
+            run(["incus", "list", "--all-projects", "--format", "json"], check=True, timeout=timeout) or "[]"
+        )
+        images: object = json.loads(
+            run(["incus", "image", "list", "--all-projects", "--format", "json"], check=True, timeout=timeout) or "[]"
+        )
     except (OSError, ToolError, ValueError):
         return None
     return stale_incus(incus_instances(insts), incus_images(images))

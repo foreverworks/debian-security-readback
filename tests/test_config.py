@@ -18,6 +18,8 @@ class ConfigFile(unittest.TestCase):
     def test_file_then_flags(self) -> None:
         c = parse('release = "trixie"\nrecent_days = 7\nfail_on = ["blocked"]\ndocker = false\n')
         self.assertEqual((c.release, c.recent_days, c.fail_on, c.docker, c.incus), ("trixie", 7, ("blocked",), False, True))
+        self.assertEqual(parse("report_mode = 0o600\n").report_mode, 0o600)
+        self.assertEqual(parse('tracker_url = "file:///srv/mirror/json"\n').tracker_url, "file:///srv/mirror/json")
         c2 = from_mapping({"recent_days": 9}, c)
         self.assertEqual((c2.release, c2.recent_days), ("trixie", 9))
 
@@ -29,8 +31,18 @@ class ConfigFile(unittest.TestCase):
             "recent_days = true",
             'docker = "no"',
             'fail_on = ["patched"]',
-            "container_cgroup_markers = [1]",
-            'container_cgroup_markers = [""]',
+            "container_cgroup_patterns = [1]",
+            'container_cgroup_patterns = [""]',
+            "container_cgroup_patterns = ['(unclosed']",
+            "download_deadline_seconds = 0",
+            "command_timeout_seconds = 0",
+            "tracker_max_mib = 0",
+            "report_mode = 0o1777",
+            'cache_dir = "relative/dir"',
+            'out_dir = ""',
+            'tracker_url = "http://mirror.example.org/json"',
+            'dsa_list_url = "ftp://mirror.example.org/list"',
+            'dsa_list_url = "https:///no-host"',
             "release = 13",
             "not toml",
         ):
@@ -49,7 +61,7 @@ class ConfigFile(unittest.TestCase):
         """examples/config.toml documents every key at its default: commented out it is the defaults,
         uncommented it must parse to them too."""
         lines = EXAMPLE.read_text(encoding="utf-8").splitlines()
-        body = "\n".join(line[2:] for line in lines if line.startswith("# ") and "=" in line)
+        body = "\n".join(line[2:] for line in lines if line.startswith("# "))
         c = parse(body)
         self.assertEqual(c, Config())
 
@@ -62,6 +74,8 @@ class Release(unittest.TestCase):
         for text in ("ID=ubuntu\nVERSION_CODENAME=noble\n", "ID=debian\n", ""):
             with self.assertRaises(ReadbackError):
                 detect_release(text)
+        with self.assertRaisesRegex(ReadbackError, "Debian unstable"):
+            detect_release('ID=debian\nPRETTY_NAME="Debian GNU/Linux forky/sid"\n')
 
 
 if __name__ == "__main__":

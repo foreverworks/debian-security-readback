@@ -18,18 +18,20 @@ DPKG_FORMAT = "${binary:Package}\t${Version}\t${source:Package}\t${source:Versio
 # Where a deleted file must live to count: the places packages install code to.
 CODE_PREFIXES = ("/usr/", "/lib", "/opt/", "/bin/", "/sbin/")
 
-# Substrings of /proc/<pid>/cgroup that mark a process of a container (Docker, Podman, Incus or LXC,
-# systemd-nspawn and libvirt machines, Kubernetes, CRI-O). Its files are the container's, not the host's.
-DEFAULT_CONTAINER_MARKERS = (
-    "/docker/",
-    "docker-",
-    "/libpod-",
-    "libpod-",
-    "machine.slice",
-    "/lxc.payload",
-    "/incus",
-    "/kubepods",
-    "crio-",
+# Regular expressions searched in each cgroup path of /proc/<pid>/cgroup that mark a process of a
+# container: its files are the container's, not the host's. Each one matches whole path components,
+# so a host service such as docker.service, incus.service or docker-compose-app.service is not one,
+# and neither are the runtimes' own monitors (conmon, lxc.monitor) or a virtual machine's emulator.
+DEFAULT_CONTAINER_PATTERNS = (
+    r"(^|/)docker-[0-9a-f]{64}\.scope(/|$)",  # Docker, systemd cgroup driver
+    r"(^|/)docker/[0-9a-f]{64}(/|$)",  # Docker, cgroupfs driver
+    r"(^|/)libpod-[0-9a-f]{64}\.scope(/|$)",  # Podman
+    r"(^|/)libpod_parent/libpod-[0-9a-f]{64}(/|$)",  # Podman, cgroupfs driver
+    r"(^|/)crio-[0-9a-f]{64}\.scope(/|$)",  # CRI-O
+    r"(^|/)cri-containerd-[0-9a-f]{64}\.scope(/|$)",  # containerd under Kubernetes
+    r"(^|/)kubepods[^/]*(/|$)",  # every pod of a Kubernetes node
+    r"(^|/)lxc\.payload\.[^/]+(/|$)",  # Incus, LXD and LXC containers
+    r"(^|/)machine\.slice/[^/]+/payload(/|$)",  # systemd-nspawn containers
 )
 
 
@@ -95,9 +97,15 @@ def parse_maps_deleted(maps_text: str) -> set[str]:
     return paths
 
 
-def in_container(cgroup_text: str, markers: tuple[str, ...] = DEFAULT_CONTAINER_MARKERS) -> bool:
+def cgroup_paths(cgroup_text: str) -> list[str]:
+    """The paths of a /proc/<pid>/cgroup text, cgroup v2 (`0::/path`) and v1 (`4:pids:/path`) alike."""
+    return [line.split(":", 2)[2] for line in cgroup_text.splitlines() if line.count(":") >= 2]
+
+
+def in_container(cgroup_text: str, patterns: tuple[str, ...] = DEFAULT_CONTAINER_PATTERNS) -> bool:
     """True for a process of a container. A host service with a private mount namespace is not one."""
-    return any(c in cgroup_text for c in markers)
+    compiled = [re.compile(p) for p in patterns]
+    return any(c.search(path) for path in cgroup_paths(cgroup_text) for c in compiled)
 
 
 def parse_owners(dpkg_s_output: str) -> dict[str, str]:

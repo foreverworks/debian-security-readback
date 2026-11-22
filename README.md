@@ -67,6 +67,12 @@ The rules behind them:
 - **Bad data fails loudly.** A DSA list or tracker file that does not look like the real thing
   (an error page, a captive portal, a truncated download) fails the readback. It is never read as
   "no fixes". A download that fails keeps the previous copy and the report says how old it is.
+- **Downloads are bounded.** Only `https://` and `file://` URLs are accepted, a redirect never
+  leaves https, every read waits at most the time left before the deadline, and a file larger than
+  its cap is refused.
+- **It writes carefully.** Reports and downloads go through a fresh temporary file renamed into
+  place, never through a symlink, and only into directories that belong to the running user and
+  that nobody else can write to. A lock in the cache directory keeps two runs from overlapping.
 
 ## Quick start
 
@@ -87,14 +93,14 @@ says that pending restarts may be missing.
 sudo python3 -I /usr/local/lib/debian-security-readback/debian-security-readback.pyz
 ```
 
-The first run downloads the tracker's files (about 90 MB, kept for 20 hours in
+Within a state, the oldest advisory comes first. The first run downloads the tracker's files (about 90 MB, kept for 20 hours in
 `/var/cache/debian-security-readback`). It prints the report and writes `report.md` and `report.json`
 to `/var/lib/debian-security-readback`:
 
 ```
 Security readback: web1, 2026-11-21
 
-Kernel: running `6.12.57-amd64` (package 6.12.57-1), installed newest 6.12.70-1
+Kernel: running 6.12.57+deb13-amd64 (package 6.12.57-1), installed newest 6.12.70-1
 
 | state | fixes |
 |---|---|
@@ -108,8 +114,8 @@ Kernel: running `6.12.57-amd64` (package 6.12.57-1), installed newest 6.12.70-1
 | state | DSA | date | package | fixed in | urgency | detail |
 |---|---|---|---|---|---|---|
 | blocked | DSA-6646-1 | 2026-11-20 | gpgme1.0 | 1.24.2-3+deb13u1 | medium | on hold: libgpgme11t64 |
-| installed_pending_activation | DSA-6600-1 | 2026-11-19 | linux | 6.12.70-1 | high | running kernel 6.12.57-1 older than 6.12.70-1; reboot pending |
-| installed_pending_activation | DSA-6610-1 | 2026-11-12 | openssl | 3.5.4-1~deb13u2 | high | stale processes: nginx(812), sshd(655) |
+| installed_pending_activation | DSA-6612-1 | 2026-11-08 | openssl | 3.5.4-1~deb13u2 | high | stale processes: nginx(812), sshd(655) |
+| installed_pending_activation | DSA-6630-1 | 2026-11-17 | linux | 6.12.70-1 | high | running kernel 6.12.57-1 older than 6.12.70-1; reboot pending |
 ```
 
 **3. Run it every day.** The `examples/` directory has a systemd service and timer:
@@ -134,14 +140,17 @@ error (exit 2), never ignored.
 |---|---|---|
 | `host` | the kernel's node name | The name the report carries. |
 | `release` | `VERSION_CODENAME` from `/etc/os-release` | The Debian release to read fixes for, such as `trixie`. On a system that is not Debian it must be set, and it only makes sense if the system really uses that Debian release's packages. |
-| `cache_dir` | `/var/cache/debian-security-readback` | Where the tracker's files are kept between runs. |
-| `out_dir` | `/var/lib/debian-security-readback` | Where `report.json` and `report.md` are written. |
-| `dsa_list_url` | the tracker's `data/DSA/list` on salsa.debian.org | The DSA list. A mirror works, and so does a `file://` URL. |
-| `tracker_url` | `https://security-tracker.debian.org/tracker/data/json` | The tracker's JSON. A mirror or a `file://` URL works too. |
+| `cache_dir` | `/var/cache/debian-security-readback` | Where the tracker's files and the lock are kept between runs. An absolute path. |
+| `out_dir` | `/var/lib/debian-security-readback` | Where `report.json` and `report.md` are written. An absolute path. |
+| `dsa_list_url` | the tracker's `data/DSA/list` on salsa.debian.org | The DSA list. An `https://` mirror works, and so does a `file://` URL. Nothing else is accepted. |
+| `tracker_url` | `https://security-tracker.debian.org/tracker/data/json` | The tracker's JSON, from the same kinds of URL. |
 | `cache_max_age_hours` | `20` | A cached copy younger than this is used without downloading. |
-| `download_deadline_seconds` | `300` | A download that takes longer counts as failed (the cached copy is then used, with a warning). |
+| `download_deadline_seconds` | `300` | A download that takes longer counts as failed (the cached copy is then used, with a warning). 1 or more. |
+| `dsa_list_max_mib`, `tracker_max_mib` | `64`, `512` | The largest download accepted. The real files are about 1.3 MB and 90 MB. |
+| `command_timeout_seconds` | `120` | How long each dpkg, apt, docker or incus call may take. A dpkg or apt call that runs out fails the readback; a docker or incus one skips that check. 1 or more. |
+| `report_mode` | `0o640` | The file mode of `report.json` and `report.md`. |
 | `recent_days` | `30` | The report counts the active fixes published in this many days. |
-| `container_cgroup_markers` | Docker, Podman, Incus, LXC, machines, Kubernetes, CRI-O | Substrings of `/proc/<pid>/cgroup` that mark a container's process. Add your runtime's if it is not covered. |
+| `container_cgroup_patterns` | Docker, Podman, Incus and LXC, systemd-nspawn, Kubernetes, CRI-O | Regular expressions searched in each path of `/proc/<pid>/cgroup` that mark a container's process. Each matches whole path components (`docker-<id>.scope`, `lxc.payload.<name>`), so `docker.service` or `incus.service` never match. Setting the key replaces the list; [examples/config.toml](examples/config.toml) shows the defaults. |
 | `docker` | `true` | List running Docker containers behind their image tag. Skipped quietly when Docker is not there. |
 | `incus` | `true` | List running Incus instances behind their newest local image. Skipped quietly when Incus is not there. |
 | `fail_on` | `[]` | States that turn the exit code into 3, for example `["blocked", "available"]`. |
@@ -150,7 +159,11 @@ Flags win over the file: `--host`, `--release`, `--cache-dir`, `--out-dir`, and 
 STATE[,STATE]`. `--version` prints the version.
 
 For a host without internet access, copy the two files there by any means and point the URLs at
-them with `file:///path/to/dsa-list` and `file:///path/to/json`.
+them with `file:///path/to/dsa-list` and `file:///path/to/json`. Behind a proxy, `https_proxy` and
+`no_proxy` in the environment are honoured.
+
+Every command it runs (dpkg-query, apt-cache, apt-mark, docker, incus) runs in the C locale, because
+their output is parsed.
 
 ## Output
 
@@ -173,8 +186,9 @@ for each thing that may make the report incomplete (a stale cached download, not
 | `signature` | 12 hex digits that change when the set of fixes not yet active changes (a fix appears, changes state or becomes active). Compare it with the last run's to alert on change instead of on every run. |
 | `peak_rss_mb` | The readback's own peak memory, in MB (usually around 200). |
 
-When the readback fails, both files are replaced by a failure report, so an old clean report is
-never left behind: `report.json` is `{"schema": 1, ..., "error": "<what went wrong>", "signature":
+Both files are written with `report_mode` (0640 by default). When the readback fails, both are
+replaced by a failure report, so an old clean report is never left behind (the error appears as an
+indented code block in `report.md`): `report.json` is `{"schema": 1, ..., "error": "<what went wrong>", "signature":
 "failed"}`.
 
 The last line on standard output is one line for log scrapers:
@@ -185,13 +199,13 @@ The last line on standard output is one line for log scrapers:
 | Code | Means |
 |---|---|
 | `0` | The report is written. |
-| `1` | The readback failed (bad or missing source data, dpkg or apt not answering). A failure report is written in place of the report, and the error goes to standard error. |
+| `1` | The readback failed (bad or missing source data, dpkg or apt failing or not answering). A failure report is written in place of the report, and the error goes to standard error. Two cases leave the reports alone: another run holds the lock, or the output directory is unsafe (not the running user's, or writable by others). |
 | `2` | The command line or the configuration is wrong. Nothing is written. |
 | `3` | The report is written, and at least one fix is in a state named by `fail_on`. |
 
 ## One GitHub issue per host
 
-`contrib/github-issue-report` turns reports into GitHub issues, for a fleet whose nightly CI job
+`contrib/github-issue-report` turns reports into GitHub issues, for a set of hosts whose nightly CI job
 collects each host's `report.md` and `report.json`. It keeps one open issue per host, updated in
 place, closes it once every fix is active, and keeps it open (and says so) when a readback failed.
 It needs `gh` and `jq`.
@@ -214,8 +228,11 @@ and `--title-prefix` (default `Security readback: `) name the issues.
   ships 3.13.
 - **Debian 12 (bookworm) and older** are out of scope: their fixes are now published as Debian LTS
   advisories (DLAs), which this tool does not read, and bookworm's Python 3.11 is below the floor.
-- **Debian testing and unstable** get no DSAs, so there is nothing to read; the readback fails with
-  a message saying so. Debian 14 should work once it is released and has DSAs of its own.
+- **Debian testing and unstable** get no DSAs, so there is nothing to read. On testing the readback
+  fails with `the DSA list has no fixes for forky: DSAs are published for Debian stable releases
+  only, not for testing or unstable`. On unstable, whose `/etc/os-release` often names no
+  `VERSION_CODENAME`, it fails saying so. Debian 14 should work once it is released and has DSAs of
+  its own.
 - **Derivatives** (Ubuntu and others) publish their own advisories. The tool refuses to guess on a
   system whose `/etc/os-release` is not Debian, unless `release` is set.
 - amd64 and arm64 make no difference to the readback; it reads package versions, not binaries.
@@ -234,6 +251,9 @@ and `--title-prefix` (default `Security readback: `) name the issues.
   (a cloud provider's kernel, a container) has its kernel fixes left out.
 - **Containers behind their image** are a hint: a Docker tag that moved, or an Incus image with a
   newer serial. Whether the new image carries the fix is the image's business.
+- **Unowned paths go unnoticed.** `dpkg-query -S` exits 1 when any path it is asked about belongs
+  to no package, so its exit status cannot tell a failure from that. A deleted file it gives no owner
+  for is left out of the pending restarts.
 - **Trust.** The tracker's files are fetched over HTTPS and checked for shape, not signature: the
   DSA list and the tracker's JSON are not signed by Debian.
 
@@ -263,7 +283,8 @@ shellcheck contrib/github-issue-report scripts/build-pyz tests/integration/*.sh
 
 `tests/integration/debian.sh` and `tests/integration/live.sh` run the readback on a real Debian
 system as root. The first installs test packages and an apt source, so run it only in a throwaway
-container: `docker run --rm -v "$PWD:/src:ro" debian:trixie sh -c 'apt-get update && apt-get install
+container (with `--privileged` it also puts a process into a container's cgroup and checks that it
+is left out): `docker run --rm -v "$PWD:/src:ro" debian:trixie sh -c 'apt-get update && apt-get install
 -y python3 && cp -r /src /w && /w/tests/integration/debian.sh python3 -I /w/bin/debian-security-readback'`.
 
 Every push runs the tests on the newest stable Python and checks types and lint against 3.13. Every

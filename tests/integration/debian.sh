@@ -14,9 +14,10 @@ set -eu
 release=$(. /etc/os-release && echo "$VERSION_CODENAME")
 work=$(mktemp -d)
 chmod 755 "$work"  # apt reads the local source as its own unprivileged user
-sleeper=""
+sleeper="" contained="" cg=""
 cleanup() {
-  [ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null || true
+  for pid in $sleeper $contained; do kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
+  [ -z "$cg" ] || rmdir "$cg" 2>/dev/null || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -32,9 +33,9 @@ mk_deb() {  # name version outdir
   dpkg-deb --root-owner-group --build "$d" "$3/$1_$2_all.deb" > /dev/null
 }
 
-for p in demo-avail demo-held demo-short demo-pending; do mk_deb "$p" 1.0-1 "$work/old"; done
+for p in demo-avail demo-held demo-short demo-pending demo-contained; do mk_deb "$p" 1.0-1 "$work/old"; done
 mk_deb demo-active 1.0-2 "$work/old"
-for p in demo-avail demo-held demo-pending; do mk_deb "$p" 1.0-2 "$work/repo"; done
+for p in demo-avail demo-held demo-pending demo-contained; do mk_deb "$p" 1.0-2 "$work/repo"; done
 dpkg -i "$work"/old/*.deb > /dev/null
 apt-mark hold demo-held > /dev/null
 
@@ -50,12 +51,28 @@ apt-get update -qq -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/readback-test
 # A process that keeps the 1.0-1 binary of demo-pending, then the upgrade that deletes it.
 /usr/bin/demo-pending 600 &
 sleeper=$!
-dpkg -i "$work/repo/demo-pending_1.0-2_all.deb" > /dev/null
+
+# The same, for a process moved into a cgroup named like a Docker container's, where the container
+# lets us create one: the readback must leave it out. Where cgroups are read-only it stays a host
+# process, and its fix reads as pending like the other.
+/usr/bin/demo-contained 600 &
+contained=$!
+contained_state=installed_pending_activation
+cg="/sys/fs/cgroup/docker-$(printf '%064d' 0).scope"
+if mkdir "$cg" 2>/dev/null && echo "$contained" > "$cg/cgroup.procs" 2>/dev/null; then
+  contained_state=active
+  echo "integration: a process sits in $cg"
+else
+  rmdir "$cg" 2>/dev/null || true
+  cg=""
+  echo "integration: cgroups are read-only here, so the container exclusion is not exercised on a real cgroup"
+fi
+dpkg -i "$work/repo/demo-pending_1.0-2_all.deb" "$work/repo/demo-contained_1.0-2_all.deb" > /dev/null
 
 # The tracker's data: the five fixes, plus filler so it passes the size checks.
 {
   n=0
-  for p in demo-avail demo-held demo-short demo-active demo-pending; do
+  for p in demo-avail demo-held demo-short demo-active demo-pending demo-contained; do
     n=$((n + 1))
     printf '[20 Nov 2026] DSA-990%s-1 %s - security update\n\t{CVE-2026-990%s}\n\t[%s] - %s 1.0-2\n' \
       "$n" "$p" "$n" "$release" "$p"
@@ -82,8 +99,8 @@ cache_dir = "$work/cache"
 out_dir = "$work/out"
 dsa_list_url = "file://$work/dsa-list"
 tracker_url = "file://$work/tracker.json"
-# a container's own processes sit in its own cgroup namespace; count every one of them
-container_cgroup_markers = []
+# The container's own processes sit at the root of its cgroup namespace and count as host processes;
+# the default patterns stay, so a process moved into a cgroup named like a container's is left out.
 EOF
 
 status=0
@@ -93,7 +110,7 @@ if [ "$status" != 3 ]; then
   cat "$work/stdout" "$work/stderr" >&2
   exit 1
 fi
-python3 -I - "$work/out/report.json" "$release" <<'EOF'
+python3 -I - "$work/out/report.json" "$release" "$contained_state" <<'EOF'
 import json, sys
 report = json.load(open(sys.argv[1]))
 states = {f["source"]: (f["state"], f["reason"]) for f in report["fixes"] if f["source"].startswith("demo-")}
@@ -103,6 +120,7 @@ want = {
     "demo-short": "blocked",
     "demo-active": "active",
     "demo-pending": "installed_pending_activation",
+    "demo-contained": sys.argv[3],
 }
 got = {k: v[0] for k, v in states.items()}
 assert got == want, (got, states)

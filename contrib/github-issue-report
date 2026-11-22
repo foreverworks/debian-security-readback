@@ -53,7 +53,9 @@ num=$(gh issue list "${gh_repo[@]}" --state open --label "$label" --search "\"$t
   | jq -r --arg t "$title" '[.[] | select(.title == $t) | .number][0] // empty')
 old_sig=""
 if [ -n "$num" ]; then
-  old_sig=$(gh issue view "$num" "${gh_repo[@]}" --json body --jq .body | sed -n 's/.*<!-- sig:\([0-9a-z]*\) -->.*/\1/p' | sed -n 1p)
+  # Only the footer, the body's last line, counts: the report above it may quote anything.
+  old_sig=$(gh issue view "$num" "${gh_repo[@]}" --json body --jq .body | awk 'NF { last = $0 } END { print last }' \
+    | sed -n 's/^<!-- sig:\([0-9a-z]*\) -->$/\1/p')
 fi
 
 # GitHub caps an issue body at 65536 characters.

@@ -3,7 +3,8 @@
 import functools
 import re
 
-_VERSION = re.compile(r"^(?:\d+:)?[0-9][A-Za-z0-9.+~:-]*$")
+# A colon is allowed in the upstream version only after an epoch, and an epoch is a number.
+_VERSION = re.compile(r"^(?:\d+:[0-9][A-Za-z0-9.+~:-]*|[0-9][A-Za-z0-9.+~-]*)$")
 
 
 def is_version(text: str) -> bool:
@@ -46,8 +47,10 @@ def _cmp_part(a: str, b: str) -> int:
 
 
 def split_version(v: str) -> tuple[int, str, str]:
-    """(epoch, upstream, revision)."""
+    """(epoch, upstream, revision). Raises ValueError on an epoch that is not a number."""
     epoch, _, rest = v.partition(":") if ":" in v else ("0", "", v)
+    if not epoch.isdigit():
+        raise ValueError("not a Debian version: %r (the part before a colon is the epoch, a number)" % v)
     upstream, _, revision = rest.rpartition("-") if "-" in rest else (rest, "", "")
     return int(epoch), upstream, revision
 

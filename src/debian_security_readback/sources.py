@@ -26,6 +26,8 @@ URGENCY_RANK = {
 # 200 must fail the readback, never read as "no fixes".
 MIN_DSA_ENTRIES = 100
 MIN_TRACKER_PACKAGES = 1000
+# The largest one package's entry may be. The biggest, `linux`, was 37 MB in November 2026.
+MAX_TRACKER_VALUE = 128 << 20
 
 _HEAD = re.compile(r"^\[(\d+ \w+ \d{4})\] (DSA-\d+-\d+) (\S+) - ")
 _RELEASE_LINE = re.compile(r"^\s+\[(\w+)\] - (\S+) (\S+)")
@@ -63,15 +65,20 @@ def validate_dsa_text(text: str, release: str, min_entries: int = MIN_DSA_ENTRIE
     """The DSA list must look like the list: at least `min_entries` DSAs and one with a fix for
     `release`. Returns the parsed fixes."""
     heads = len(re.findall(r"^\[\d+ \w+ \d{4}\] DSA-\d+-\d+ ", text, re.M))
+    if heads < min_entries:
+        raise ReadbackError("the DSA list is not the DSA list (%d entries)" % heads)
     fixes = parse_dsa_list(text, release)
-    if heads < min_entries or not fixes:
-        raise ReadbackError("the DSA list is not the DSA list (%d entries, %d for %s)" % (heads, len(fixes), release))
+    if not fixes:
+        raise ReadbackError(
+            "the DSA list has no fixes for %s: DSAs are published for Debian stable releases only, "
+            "not for testing or unstable (set `release` if the codename is wrong)" % release
+        )
     return fixes
 
 
-def iter_tracker(f: TextIO, chunk: int = 1 << 22) -> Iterator[tuple[str, object]]:
+def iter_tracker(f: TextIO, chunk: int = 1 << 22, max_value: int = MAX_TRACKER_VALUE) -> Iterator[tuple[str, object]]:
     """Stream the tracker's top-level object as (package, value) pairs, so the whole file (about
-    90 MB) is never held in memory at once."""
+    90 MB) is never held in memory at once. A single value longer than max_value characters fails."""
     dec = json.JSONDecoder()
     buf = f.read(chunk)
     pos = 0
@@ -106,6 +113,8 @@ def iter_tracker(f: TextIO, chunk: int = 1 << 22) -> Iterator[tuple[str, object]
             except json.JSONDecodeError:
                 if eof:
                     raise
+                if len(buf) - pos > max_value:
+                    raise ReadbackError("the tracker JSON has a value longer than %d characters" % max_value) from None
                 fill()
 
     skip(" \t\r\n")

@@ -30,6 +30,11 @@ class Versions(unittest.TestCase):
         self.assertTrue(is_version("1:2.3-4+deb13u1"))
         self.assertFalse(is_version("<end-of-life>"))
         self.assertFalse(is_version("<not-affected>"))
+        self.assertTrue(is_version("1:2.0:3-1"))
+        self.assertFalse(is_version("2.0:3-1"))  # a colon needs an epoch
+        self.assertFalse(is_version("a:2.0-1"))  # an epoch is a number
+        with self.assertRaisesRegex(ValueError, "epoch, a number"):
+            compare_versions("a:2.0-1", "1.0")
 
 
 class DsaList(unittest.TestCase):

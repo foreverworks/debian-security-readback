@@ -71,14 +71,44 @@ class Proc(unittest.TestCase):
         )
         self.assertEqual(parse_maps_deleted(maps), {"/usr/lib/x86_64-linux-gnu/libssl.so.3"})
 
-    def test_container_cgroups_are_excluded_host_services_are_not(self) -> None:
-        self.assertTrue(in_container("0::/system.slice/docker-abc123.scope\n"))
-        self.assertTrue(in_container("0::/machine.slice/incus-x.scope\n"))
-        self.assertTrue(in_container("0::/user.slice/libpod-1.scope\n"))
-        # a host daemon, even one with PrivateTmp or ProtectSystem (its own mount namespace)
-        self.assertFalse(in_container("0::/system.slice/ssh.service\n"))
-        self.assertFalse(in_container("0::/system.slice/nginx.service\n"))
-        self.assertTrue(in_container("0::/system.slice/myruntime-1.scope\n", ("myruntime-",)))
+    def test_container_cgroups_are_excluded(self) -> None:
+        cid = "3f4e" * 16
+        for path in (
+            "/system.slice/docker-%s.scope" % cid,
+            "/docker/%s" % cid,
+            "/machine.slice/libpod-%s.scope/container" % cid,
+            "/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-%s.scope/container" % cid,
+            "/libpod_parent/libpod-%s" % cid,
+            "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1234.slice/cri-containerd-%s.scope" % cid,
+            "/kubepods/besteffort/pod1234/%s" % cid,
+            "/system.slice/crio-%s.scope" % cid,
+            "/lxc.payload.web1/system.slice/nginx.service",
+            "/machine.slice/systemd-nspawn@build.service/payload/system.slice/cron.service",
+            "/machine.slice/machine-build.scope/payload",
+        ):
+            self.assertTrue(in_container("0::%s\n" % path), path)
+        # cgroup v1: any hierarchy's path counts
+        self.assertTrue(in_container("12:pids:/docker/%s\n11:cpu,cpuacct:/docker/%s\n" % (cid, cid)))
+
+    def test_host_services_are_not_containers(self) -> None:
+        cid = "3f4e" * 16
+        for path in (
+            "/system.slice/ssh.service",
+            "/system.slice/docker.service",  # dockerd itself
+            "/system.slice/containerd.service",
+            "/system.slice/incus.service",
+            "/system.slice/docker-compose-app.service",
+            "/system.slice/docker-cleanup.timer",
+            "/system.slice/libpod-conmon-%s.scope" % cid,  # Podman's monitor runs on the host
+            "/system.slice/crio-conmon-%s.scope" % cid,
+            "/lxc.monitor.web1",  # Incus's monitor of a container
+            "/machine.slice/machine-qemu\\x2d1\\x2dvm1.scope/libvirt/emulator",  # a VM's qemu
+            "/user.slice/user-1000.slice/session-3.scope",
+            "/",
+        ):
+            self.assertFalse(in_container("0::%s\n" % path), path)
+        self.assertTrue(in_container("0::/system.slice/myruntime-1.scope\n", (r"(^|/)myruntime-\d+\.scope$",)))
+        self.assertFalse(in_container("0::/system.slice/docker-%s.scope\n" % cid, ()))
 
 
 class Containers(unittest.TestCase):
