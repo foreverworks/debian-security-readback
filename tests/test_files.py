@@ -6,7 +6,14 @@ from pathlib import Path
 from unittest import mock
 
 from debian_security_readback.collect import collect_processes
-from debian_security_readback.files import LockBusyError, UnsafeDirError, exclusive_lock, safe_dir, write_text
+from debian_security_readback.files import (
+    LockBusyError,
+    UnsafeDirError,
+    exclusive_lock,
+    remove_stale_temporaries,
+    safe_dir,
+    write_text,
+)
 
 
 class Files(unittest.TestCase):
@@ -41,6 +48,13 @@ class Files(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["report.json", "victim"])
+
+    def test_a_killed_runs_temporaries_are_removed(self) -> None:
+        for name in (".tracker.json.k3j9x_a1", ".tracker.json.zz", ".report.md.q", "tracker.json", ".other.x", "keep"):
+            (self.dir / name).write_text("x", encoding="utf-8")
+        remove_stale_temporaries(str(self.dir / "tracker.json"))
+        remove_stale_temporaries(str(self.dir / "report.md"))
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), [".other.x", "keep", "tracker.json"])
 
     def test_one_run_at_a_time(self) -> None:
         lock = str(self.dir / "lock")

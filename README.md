@@ -187,8 +187,10 @@ for each thing that may make the report incomplete (a stale cached download, not
 | `peak_rss_mb` | The readback's own peak memory, in MB (usually around 200). |
 
 Both files are written with `report_mode` (0640 by default). When the readback fails, both are
-replaced by a failure report, so an old clean report is never left behind (the error appears as an
-indented code block in `report.md`): `report.json` is `{"schema": 1, ..., "error": "<what went wrong>", "signature":
+replaced by a failure report (the error appears as an indented code block in `report.md`), so a
+failure never leaves an old clean report looking current. Two failures write nothing: another run
+holding the lock (that run writes its own reports), and an output directory the readback refuses
+as unsafe. Watch the exit code too, or the report's `date`, to catch those: `report.json` is `{"schema": 1, ..., "error": "<what went wrong>", "signature":
 "failed"}`.
 
 The last line on standard output is one line for log scrapers:

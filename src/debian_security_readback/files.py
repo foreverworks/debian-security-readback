@@ -54,6 +54,18 @@ def write_atomic_from(
         raise
 
 
+def remove_stale_temporaries(path: str) -> None:
+    """Delete what a killed run left of write_atomic_from(path): its temporary files, which can be as
+    large as the tracker's JSON. Call it only while holding the lock."""
+    directory, prefix = os.path.dirname(path) or ".", "." + os.path.basename(path) + "."
+    for name in os.listdir(directory):
+        if name.startswith(prefix):
+            full = os.path.join(directory, name)
+            if not stat.S_ISDIR(os.lstat(full).st_mode):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(full)
+
+
 def write_text(path: str, mode: int, text: str) -> None:
     data = text.encode("utf-8")
 

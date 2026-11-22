@@ -233,6 +233,15 @@ class Cli(unittest.TestCase):
         self.assertEqual(self.run_cli("--config", str(self.config(report_mode="0o600"))).returncode, 0)
         self.assertEqual(stat.S_IMODE((self.out / "report.md").stat().st_mode), 0o600)
 
+    def test_a_killed_runs_temporaries_are_cleaned_up(self) -> None:
+        (self.dir / "cache").mkdir()
+        (self.dir / "cache" / ".tracker.json.abc123").write_bytes(b"x" * 1000)
+        self.out.mkdir()
+        (self.out / ".report.md.def456").write_text("x", encoding="utf-8")
+        self.assertEqual(self.run_cli("--config", str(self.config())).returncode, 0)
+        self.assertEqual(sorted(p.name for p in (self.dir / "cache").iterdir()), ["dsa-list", "lock", "tracker.json"])
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["report.json", "report.md"])
+
     def test_a_release_without_dsas_says_so(self) -> None:
         r = self.run_cli("--config", str(self.config()), "--release", "forky")
         self.assertEqual(r.returncode, 1)

@@ -79,12 +79,13 @@ def failed(host: str, today: datetime.date, error: str) -> FailedReport:
     }
 
 
-_ENTITIES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "@": "&#64;"}
+_ENTITIES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "@": "&#64;", "#": "&#35;"}
 
 
 def cell(value: object) -> str:
     """Text safe in a Markdown table cell, here and in a GitHub issue: a process can name itself
-    anything, so nothing it says may close the cell, start a code span, open HTML or mention someone."""
+    anything, so nothing it says may close the cell, start a code span, open HTML, mention someone,
+    or make a link or an issue reference."""
     out = []
     for ch in str(value):
         if ch in "\\|`[]":
@@ -95,7 +96,7 @@ def cell(value: object) -> str:
             out.append(" ")
         else:
             out.append(ch)
-    return "".join(out)
+    return "".join(out).replace("://", ":&#47;&#47;")
 
 
 def render_failed(host: str, error: str) -> str:

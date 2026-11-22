@@ -59,14 +59,18 @@ def _http_body(
         u = urllib.parse.urlsplit(url)
         conn = _connect(u, deadline_at)
         path = (u.path or "/") + ("?" + u.query if u.query else "")
-        conn.request(
-            "GET", path, headers={"User-Agent": "debian-security-readback/" + __version__, "Accept-Encoding": "identity"}
-        )
-        sock = conn.sock
-        if not isinstance(sock, socket.socket):
-            raise ReadbackError("no connection to %s" % u.netloc)
-        sock.settimeout(min(SOCKET_TIMEOUT_S, _left(deadline_at)))
-        resp = conn.getresponse()
+        try:
+            conn.request(
+                "GET", path, headers={"User-Agent": "debian-security-readback/" + __version__, "Accept-Encoding": "identity"}
+            )
+            sock = conn.sock
+            if not isinstance(sock, socket.socket):
+                raise ReadbackError("no connection to %s" % u.netloc)
+            sock.settimeout(min(SOCKET_TIMEOUT_S, _left(deadline_at)))
+            resp = conn.getresponse()
+        except BaseException:
+            conn.close()
+            raise
         if resp.status in (301, 302, 303, 307, 308):
             new = urllib.parse.urljoin(url, resp.getheader("Location") or "")
             resp.close()

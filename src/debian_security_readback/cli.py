@@ -26,7 +26,14 @@ from debian_security_readback.config import Config, ConfigError, from_mapping, l
 from debian_security_readback.decide import classify, counts, relevant_packages
 from debian_security_readback.download import fetch
 from debian_security_readback.facts import kernel_state, parse_os_release
-from debian_security_readback.files import LockBusyError, UnsafeDirError, exclusive_lock, safe_dir, write_text
+from debian_security_readback.files import (
+    LockBusyError,
+    UnsafeDirError,
+    exclusive_lock,
+    remove_stale_temporaries,
+    safe_dir,
+    write_text,
+)
 from debian_security_readback.model import STATES, ReadbackError
 from debian_security_readback.report import build, failed, render, render_failed
 from debian_security_readback.sources import load_urgencies, validate_dsa_text
@@ -61,6 +68,9 @@ def readback(cfg: Config, host: str, today: datetime.date, proc_root: str = "/pr
     safe_dir(cfg.cache_dir)
     safe_dir(cfg.out_dir)
     with exclusive_lock(os.path.join(cfg.cache_dir, "lock")):
+        for d, names in ((cfg.cache_dir, ("dsa-list", "tracker.json")), (cfg.out_dir, ("report.json", "report.md"))):
+            for name in names:
+                remove_stale_temporaries(os.path.join(d, name))
         return _readback(cfg, host, release, today, proc_root)
 
 

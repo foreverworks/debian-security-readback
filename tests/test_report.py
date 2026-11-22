@@ -2,7 +2,7 @@ import unittest
 
 from debian_security_readback.decide import classify
 from debian_security_readback.model import Kernel, StaleDocker
-from debian_security_readback.report import build, failed, render, render_failed
+from debian_security_readback.report import build, cell, failed, render, render_failed
 from debian_security_readback.sources import parse_dsa_list
 from tests.support import DSA, NOKERNEL, TODAY, pkg
 
@@ -42,6 +42,7 @@ class Render(unittest.TestCase):
         self.assertIn("a\\|b\\`c&#64;admin&lt;img src=x&gt;\\[l\\](u)\\\\(1)", line)
         self.assertEqual(line.count(" | "), 6)
         self.assertNotIn("\n| injected", md)
+        self.assertEqual(cell("#12 https://x.example"), "&#35;12 https:&#47;&#47;x.example")
         failed_md = render_failed("h", "boom @admin <b>\nsecond line")
         self.assertIn("\n    boom @admin <b>\n    second line\n", failed_md)
 
