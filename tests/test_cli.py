@@ -254,12 +254,15 @@ class Proc(unittest.TestCase):
         from debian_security_readback.collect import collect_processes
 
         with tempfile.TemporaryDirectory() as d:
-            exe = Path(d) / "usr" / "bin" / "sleeper"
+            # keep the name: a multicall coreutils (uutils, as on Ubuntu 26.04) refuses to run renamed
+            exe = Path(d) / "usr" / "bin" / "sleep"
             exe.parent.mkdir(parents=True)
             exe.write_bytes(Path("/bin/sleep").read_bytes())
             exe.chmod(0o755)
             p = subprocess.Popen([str(exe), "30"])
             try:
+                time.sleep(0.2)
+                self.assertIsNone(p.poll(), "the copy of /bin/sleep did not stay running")
                 exe.unlink()
                 found = [x for x in collect_processes("/proc", ()) if x["pid"] == str(p.pid)]
             finally:

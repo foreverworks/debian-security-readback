@@ -26,8 +26,9 @@ mkdir -p "$work/build" "$work/repo" "$work/old"
 # A package that ships one executable, so a process can keep running the old one after an upgrade.
 mk_deb() {  # name version outdir
   d="$work/build/$1-$2"
-  mkdir -p "$d/DEBIAN" "$d/usr/bin"
-  cp /bin/sleep "$d/usr/bin/$1"
+  mkdir -p "$d/DEBIAN" "$d/usr/lib/$1"
+  # named sleep: a multicall coreutils (uutils) refuses to run under another name
+  cp /bin/sleep "$d/usr/lib/$1/sleep"
   printf 'Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: Nobody <nobody@example.com>\nDescription: readback test package\n' \
     "$1" "$2" > "$d/DEBIAN/control"
   dpkg-deb --root-owner-group --build "$d" "$3/$1_$2_all.deb" > /dev/null
@@ -49,13 +50,13 @@ apt-get update -qq -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/readback-test
   -o APT::Get::List-Cleanup=0
 
 # A process that keeps the 1.0-1 binary of demo-pending, then the upgrade that deletes it.
-/usr/bin/demo-pending 600 &
+/usr/lib/demo-pending/sleep 600 &
 sleeper=$!
 
 # The same, for a process moved into a cgroup named like a Docker container's, where the container
 # lets us create one: the readback must leave it out. Where cgroups are read-only it stays a host
 # process, and its fix reads as pending like the other.
-/usr/bin/demo-contained 600 &
+/usr/lib/demo-contained/sleep 600 &
 contained=$!
 contained_state=installed_pending_activation
 cg="/sys/fs/cgroup/docker-$(printf '%064d' 0).scope"
@@ -126,7 +127,7 @@ got = {k: v[0] for k, v in states.items()}
 assert got == want, (got, states)
 assert states["demo-held"][1] == "on hold: demo-held", states
 assert states["demo-short"][1].startswith("archive offers no 1.0-2"), states
-assert "demo-pending(" in states["demo-pending"][1], states
+assert "sleep(" in states["demo-pending"][1], states
 assert report["release"] == sys.argv[2] and report["host"] == "integration.example.org", report
 assert report["notes"] == [], report["notes"]
 assert [f["urgency"] for f in report["fixes"] if f["source"] == "demo-held"] == ["high"]
