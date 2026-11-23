@@ -101,7 +101,7 @@ sudo python3 -I /usr/local/lib/debian-security-readback/debian-security-readback
 The first run downloads the tracker's files (about 90 MB, kept for 20 hours in
 `/var/cache/debian-security-readback`). It prints the report and writes `report.md` and `report.json`
 to `/var/lib/debian-security-readback`. Within a state, the oldest advisory comes first. A report looks
-like this (the host and numbers are an example):
+like this (shortened; the host and numbers are an example):
 
 ```
 Security readback: web1, 2026-11-21
@@ -124,7 +124,7 @@ Kernel: running 6.12.57+deb13-amd64 (package 6.12.57-1), installed newest 6.12.7
 | installed_pending_activation | DSA-6630-1 | 2026-11-17 | linux | 6.12.70-1 | high | running kernel 6.12.57-1 older than 6.12.70-1; reboot pending |
 ```
 
-To look first without root, point it at directories you own. The report then warns that processes
+To look first without root, in the same shell as step 1 (it uses `$v`), point it at directories you own. The report then warns that processes
 of other users were not read, so pending restarts may be missing:
 
 ```sh
