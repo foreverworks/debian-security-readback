@@ -7,9 +7,14 @@ old code, it is **active**, or it is **blocked** by a hold or by an archive that
 Report only: it never installs, restarts or removes anything.
 
 For people who run Debian servers and want an honest answer to "are we patched?", one that does not
-stop at "the package is installed".
+stop at "the package is installed". It is not for you if you want a tool that applies the fixes (it
+only reports), or if your hosts run something other than Debian stable (see
+[Supported systems](#supported-systems)).
 
 One file, Python standard library only, runs as root on Debian 13. Typed. MIT.
+
+**You need:** Debian 13 (trixie), Python 3.13 or newer (Debian 13 ships it), root for a complete
+report, and about 90 MB of download on the first run. No account, no service and no cost.
 
 ## The problem
 
@@ -93,9 +98,10 @@ says that pending restarts may be missing.
 sudo python3 -I /usr/local/lib/debian-security-readback/debian-security-readback.pyz
 ```
 
-Within a state, the oldest advisory comes first. The first run downloads the tracker's files (about 90 MB, kept for 20 hours in
+The first run downloads the tracker's files (about 90 MB, kept for 20 hours in
 `/var/cache/debian-security-readback`). It prints the report and writes `report.md` and `report.json`
-to `/var/lib/debian-security-readback`:
+to `/var/lib/debian-security-readback`. Within a state, the oldest advisory comes first. A report looks
+like this (the host and numbers are an example):
 
 ```
 Security readback: web1, 2026-11-21
@@ -116,6 +122,13 @@ Kernel: running 6.12.57+deb13-amd64 (package 6.12.57-1), installed newest 6.12.7
 | blocked | DSA-6646-1 | 2026-11-20 | gpgme1.0 | 1.24.2-3+deb13u1 | medium | on hold: libgpgme11t64 |
 | installed_pending_activation | DSA-6612-1 | 2026-11-08 | openssl | 3.5.4-1~deb13u2 | high | stale processes: nginx(812), sshd(655) |
 | installed_pending_activation | DSA-6630-1 | 2026-11-17 | linux | 6.12.70-1 | high | running kernel 6.12.57-1 older than 6.12.70-1; reboot pending |
+```
+
+To look first without root, point it at directories you own. The report then warns that processes
+of other users were not read, so pending restarts may be missing:
+
+```sh
+python3 -I debian-security-readback-$v.pyz --cache-dir ~/.cache/readback --out-dir ~/readback-report
 ```
 
 **3. Run it every day.** The `examples/` directory has a systemd service and timer:
